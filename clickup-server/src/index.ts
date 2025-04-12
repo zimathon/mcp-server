@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 
-import 'dotenv/config'; // Load .env file
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Explicitly load .env file from the project root relative to the build output
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -66,12 +74,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["list_id"]
         }
       },
-      // Add other tools like create_task, get_task, etc. here
-      // {
-      //   name: "create_task",
-      //   description: "Create a new task in a ClickUp list",
-      //   inputSchema: { ... }
-      // }
+      {
+        name: "create_task",
+        description: "Create a new task in a ClickUp list",
+        inputSchema: {
+          type: "object",
+          properties: {
+            list_id: {
+              type: "string",
+              description: "The ID of the ClickUp list to add the task to"
+            },
+            name: {
+              type: "string",
+              description: "The name of the new task"
+            },
+            description: {
+              type: "string",
+              description: "Optional description for the task"
+            },
+            assignees: {
+              type: "array",
+              items: { type: "integer" },
+              description: "Optional array of user IDs to assign the task to"
+            },
+            // Add other potential parameters like priority, due_date, etc.
+          },
+          required: ["list_id", "name"]
+        }
+      }
     ]
   };
 });
@@ -112,10 +142,53 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
-    // Add cases for other tools like create_task here
-    // case "create_task": {
-    //   // ... implementation ...
-    // }
+    case "create_task": {
+      const listId = request.params.arguments?.list_id;
+      const taskName = request.params.arguments?.name;
+      const description = request.params.arguments?.description;
+      const assignees = request.params.arguments?.assignees;
+
+      if (typeof listId !== 'string' || !listId) {
+        throw new McpError(ErrorCode.InvalidParams, 'list_id (string) is required');
+      }
+      if (typeof taskName !== 'string' || !taskName) {
+        throw new McpError(ErrorCode.InvalidParams, 'name (string) is required');
+      }
+      if (description !== undefined && typeof description !== 'string') {
+         throw new McpError(ErrorCode.InvalidParams, 'description must be a string if provided');
+      }
+       if (assignees !== undefined && (!Array.isArray(assignees) || !assignees.every(id => typeof id === 'number'))) {
+         throw new McpError(ErrorCode.InvalidParams, 'assignees must be an array of numbers if provided');
+      }
+
+      try {
+        const payload: { name: string; description?: string; assignees?: number[] } = { name: taskName };
+        if (description) {
+          payload.description = description;
+        }
+         if (assignees) {
+          payload.assignees = assignees;
+        }
+
+        const response = await clickupApi.post(`/list/${listId}/task`, payload);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(response.data, null, 2) // Return the created task details
+          }]
+        };
+      } catch (error) {
+        console.error("ClickUp API Error (create_task):", error);
+        const errorMessage = axios.isAxiosError(error)
+          ? error.response?.data?.err || error.message
+          : String(error);
+        return {
+          content: [{ type: "text", text: `Error creating task: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
 
     default:
       throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
